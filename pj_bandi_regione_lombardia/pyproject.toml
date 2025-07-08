@@ -1,0 +1,23 @@
+[project]
+name = "pj_bandi_regione_lombardia"
+version = "0.1.0"
+description = "pj_bandi_regione_lombardia using crewAI"
+authors = [{ name = "Your Name", email = "you@example.com" }]
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "crewai[tools]>=0.130.0,<1.0.0"
+]
+
+[project.scripts]
+pj_bandi_regione_lombardia = "pj_bandi_regione_lombardia.main:run"
+run_crew = "pj_bandi_regione_lombardia.main:run"
+train = "pj_bandi_regione_lombardia.main:train"
+replay = "pj_bandi_regione_lombardia.main:replay"
+test = "pj_bandi_regione_lombardia.main:test"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.crewai]
+type = "crew"
