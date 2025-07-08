@@ -3,229 +3,214 @@ from crewai.tools import BaseTool
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any
 import json
-import re
 
-class DocumentAnalysisTool(BaseTool):
-    name: str = "Document Analysis Tool"
-    description: str = "Analizza documenti di bandi per estrarre informazioni chiave come criteri di eleggibilità, importi, scadenze e requisiti."
+class LLMDocumentExtractorTool(BaseTool):
+    name: str = "LLM Document Extractor Tool"
+    description: str = "Utilizza l'LLM per estrarre specifiche informazioni dal documento di bando attraverso domande mirate."
     
-    def _run(self, document_text: str) -> str:
-        """Analizza il documento e estrae informazioni strutturate"""
+    def _run(self, document_text: str, field_name: str) -> str:
+        """
+        Estrae una specifica informazione dal documento usando l'LLM
+        Args:
+            document_text: Il testo del documento da analizzare
+            field_name: Il nome del campo da estrarre (es. "titolo", "ente_erogatore", etc.)
+        """
         
-        analysis = {
-            "funding_info": self._extract_funding_info(document_text),
-            "eligibility_criteria": self._extract_eligibility_criteria(document_text),
-            "deadlines": self._extract_deadlines(document_text),
-            "requirements": self._extract_requirements(document_text),
-            "target_sectors": self._extract_target_sectors(document_text),
-            "company_size_requirements": self._extract_company_size(document_text)
+        # Definisce le domande specifiche per ogni campo
+        prompts = {
+            "ente_erogatore": """
+            Analizza il seguente documento di bando e identifica l'ente che eroga il finanziamento.
+            Cerca riferimenti a: Regione Lombardia, Camera di Commercio, Ministero, Unioncamere, etc.
+            
+            Documento:
+            {document}
+            
+            Rispondi SOLO con il nome dell'ente erogatore, senza spiegazioni aggiuntive.
+            Se non trovi informazioni chiare, rispondi "Non specificato".
+            """,
+            
+            "titolo_avviso": """
+            Analizza il seguente documento di bando e identifica il titolo ufficiale dell'avviso.
+            Cerca il titolo principale del bando, spesso scritto in maiuscolo o evidenziato.
+            
+            Documento:
+            {document}
+            
+            Rispondi SOLO con il titolo del bando, massimo 200 caratteri.
+            Se non trovi un titolo chiaro, rispondi "Non specificato".
+            """,
+            
+            "descrizione_aggiuntiva": """
+            Analizza il seguente documento di bando e crea una descrizione sintetica (massimo 300 caratteri) 
+            che spieghi di cosa si tratta e quali sono gli obiettivi principali del bando.
+            
+            Documento:
+            {document}
+            
+            Rispondi SOLO con una descrizione concisa, senza introduzioni.
+            """,
+            
+            "beneficiari": """
+            Analizza il seguente documento di bando e identifica chi può partecipare al bando.
+            Cerca informazioni su: startup, PMI, piccole e medie imprese, cooperative, enti, etc.
+            
+            Documento:
+            {document}
+            
+            Rispondi SOLO con i tipi di soggetti che possono partecipare, separati da virgola.
+            Se non trovi informazioni, rispondi "Non specificato".
+            """,
+            
+            "apertura": """
+            Analizza il seguente documento di bando e identifica la data di apertura del bando.
+            Cerca date di inizio, apertura, pubblicazione del bando.
+            
+            Documento:
+            {document}
+            
+            Rispondi SOLO con la data nel formato DD/MM/YYYY.
+            Se non trovi la data di apertura, rispondi "Non specificato".
+            """,
+            
+            "chiusura": """
+            Analizza il seguente documento di bando e identifica la data di chiusura/scadenza del bando.
+            Cerca date di scadenza, termine, chiusura per la presentazione delle domande.
+            
+            Documento:
+            {document}
+            
+            Rispondi SOLO con la data nel formato DD/MM/YYYY.
+            Se non trovi la data di chiusura, rispondi "Non specificato".
+            """,
+            
+            "dotazione_finanziaria": """
+            Analizza il seguente documento di bando e identifica la dotazione finanziaria totale disponibile.
+            Cerca il budget complessivo, la dotazione, lo stanziamento totale del bando.
+            
+            Documento:
+            {document}
+            
+            Rispondi SOLO con l'importo (es. "€ 2.000.000" o "2 milioni di euro").
+            Se non trovi l'informazione, rispondi "Non specificato".
+            """,
+            
+            "contributo": """
+            Analizza il seguente documento di bando e identifica il tipo e l'importo del contributo erogabile.
+            Cerca informazioni su: fondo perduto, finanziamento agevolato, percentuale di copertura, importo massimo.
+            
+            Documento:
+            {document}
+            
+            Rispondi SOLO con il tipo di contributo e l'importo (es. "Fondo perduto fino a € 150.000").
+            Se non trovi informazioni, rispondi "Non specificato".
+            """,
+            
+            "parole_chiave": """
+            Analizza il seguente documento di bando e identifica le 5-7 parole chiave principali 
+            che descrivono i settori, le tecnologie o gli ambiti di intervento del bando.
+            
+            Documento:
+            {document}
+            
+            Rispondi SOLO con le parole chiave separate da virgola (es. "innovazione, digitale, sostenibilità, IoT").
+            """,
+            
+            "aperto": """
+            Analizza il seguente documento di bando e determina se il bando è attualmente aperto o chiuso.
+            Confronta le date attuali con le scadenze indicate nel documento.
+            
+            Documento:
+            {document}
+            
+            Rispondi SOLO con "si" se il bando è aperto o "no" se è chiuso.
+            Se non puoi determinarlo, rispondi "Non specificato".
+            """
         }
         
-        return json.dumps(analysis, indent=2, ensure_ascii=False)
-    
-    def _extract_funding_info(self, text: str) -> Dict[str, Any]:
-        """Estrae informazioni sui finanziamenti"""
-        funding_patterns = [
-            r'(?:€|euro|EUR)\s*[\d.,]+(?:\s*(?:milioni?|miliardi?))?',
-            r'(?:importo|finanziamento|contributo).*?(?:€|euro|EUR)\s*[\d.,]+',
-            r'(?:fino a|massimo|max).*?(?:€|euro|EUR)\s*[\d.,]+',
-            r'[\d.,]+\s*(?:€|euro|EUR)',
-            r'(?:budget|dotazione).*?(?:€|euro|EUR)\s*[\d.,]+'
-        ]
+        # Ottiene il prompt specifico per il campo richiesto
+        if field_name not in prompts:
+            return f"Errore: Campo '{field_name}' non riconosciuto"
         
-        funding_info = []
-        for pattern in funding_patterns:
-            matches = re.findall(pattern, text, re.IGNORECASE)
-            funding_info.extend(matches)
+        prompt = prompts[field_name].format(document=document_text)
         
-        return {
-            "amounts_found": list(set(funding_info)),
-            "funding_type": self._determine_funding_type(text)
-        }
-    
-    def _extract_eligibility_criteria(self, text: str) -> List[str]:
-        """Estrae criteri di eleggibilità"""
-        criteria_keywords = [
-            'eleggibil', 'requisit', 'ammissibil', 'criteri',
-            'può partecipare', 'possono partecipare', 'destinatari'
-        ]
-        
-        criteria = []
-        lines = text.split('\n')
-        
-        for line in lines:
-            for keyword in criteria_keywords:
-                if keyword in line.lower():
-                    # Estrae la frase completa
-                    clean_line = line.strip()
-                    if len(clean_line) > 10:
-                        criteria.append(clean_line)
-        
-        return list(set(criteria))[:10]  # Limita a 10 criteri
-    
-    def _extract_deadlines(self, text: str) -> List[str]:
-        """Estrae scadenze e date importanti"""
-        date_patterns = [
-            r'\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}',
-            r'\d{1,2}\s+(?:gennaio|febbraio|marzo|aprile|maggio|giugno|luglio|agosto|settembre|ottobre|novembre|dicembre)\s+\d{4}',
-            r'(?:scadenza|termine|entro|fino al).*?\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}',
-            r'(?:scadenza|termine|entro|fino al).*?\d{1,2}\s+(?:gennaio|febbraio|marzo|aprile|maggio|giugno|luglio|agosto|settembre|ottobre|novembre|dicembre)\s+\d{4}'
-        ]
-        
-        deadlines = []
-        for pattern in date_patterns:
-            matches = re.findall(pattern, text, re.IGNORECASE)
-            deadlines.extend(matches)
-        
-        return list(set(deadlines))
-    
-    def _extract_requirements(self, text: str) -> List[str]:
-        """Estrae requisiti specifici"""
-        requirement_keywords = [
-            'deve', 'dovr', 'obbligator', 'necessar', 'richiesto',
-            'indispensabil', 'fondamental', 'essenzial'
-        ]
-        
-        requirements = []
-        sentences = re.split(r'[.!?]', text)
-        
-        for sentence in sentences:
-            for keyword in requirement_keywords:
-                if keyword in sentence.lower():
-                    clean_sentence = sentence.strip()
-                    if len(clean_sentence) > 15:
-                        requirements.append(clean_sentence)
-        
-        return list(set(requirements))[:8]  # Limita a 8 requisiti
-    
-    def _extract_target_sectors(self, text: str) -> List[str]:
-        """Estrae settori target"""
-        sectors = [
-            'tecnologia', 'innovazione', 'digitale', 'ICT', 'software',
-            'manifatturiero', 'industria', 'agricoltura', 'turismo',
-            'servizi', 'commercio', 'energia', 'ambiente', 'sostenibilità',
-            'ricerca', 'sviluppo', 'startup', 'PMI', 'export'
-        ]
-        
-        found_sectors = []
-        text_lower = text.lower()
-        
-        for sector in sectors:
-            if sector in text_lower:
-                found_sectors.append(sector)
-        
-        return found_sectors
-    
-    def _extract_company_size(self, text: str) -> List[str]:
-        """Estrae requisiti dimensione aziendale"""
-        size_keywords = [
-            'startup', 'PMI', 'piccole e medie imprese', 'micro imprese',
-            'grande impresa', 'dipendenti', 'fatturato', 'bilancio'
-        ]
-        
-        size_info = []
-        text_lower = text.lower()
-        
-        for keyword in size_keywords:
-            if keyword in text_lower:
-                size_info.append(keyword)
-        
-        return size_info
-    
-    def _determine_funding_type(self, text: str) -> str:
-        """Determina il tipo di finanziamento"""
-        if 'fondo perduto' in text.lower() or 'contributo a fondo perduto' in text.lower():
-            return 'Fondo perduto'
-        elif 'prestito' in text.lower() or 'finanziamento agevolato' in text.lower():
-            return 'Prestito agevolato'
-        elif 'credito d\'imposta' in text.lower():
-            return 'Credito d\'imposta'
-        else:
-            return 'Non specificato'
+        # Restituisce il prompt formattato (sarà elaborato dall'LLM dell'agente)
+        return prompt
 
 class BusinessAlignmentTool(BaseTool):
     name: str = "Business Alignment Tool"
-    description: str = "Valuta l'allineamento tra un'idea di business e i requisiti di un bando, calcolando un punteggio di compatibilità."
+    description: str = "Valuta l'allineamento tra l'idea di business dell'utente e il bando analizzato."
     
-    def _run(self, business_idea: str, bando_analysis: str) -> str:
-        """Calcola l'allineamento tra business idea e bando"""
+    def _run(self, business_idea: str, document_text: str) -> str:
+        """Valuta l'allineamento tra business idea e bando usando l'LLM"""
         
-        try:
-            bando_data = json.loads(bando_analysis)
-        except:
-            bando_data = {"error": "Impossibile parsare l'analisi del bando"}
+        prompt = f"""
+        Analizza l'allineamento tra l'idea di business dell'utente e il bando fornito.
         
-        alignment_score = self._calculate_alignment_score(business_idea, bando_data)
-        alignment_explanation = self._generate_alignment_explanation(business_idea, bando_data, alignment_score)
+        IDEA DI BUSINESS:
+        {business_idea}
         
-        result = {
-            "alignment_score": alignment_score,
-            "alignment_explanation": alignment_explanation,
-            "recommendations": self._generate_recommendations(business_idea, bando_data, alignment_score)
-        }
+        DOCUMENTO BANDO:
+        {document_text}
         
-        return json.dumps(result, indent=2, ensure_ascii=False)
+        Valuta l'allineamento considerando:
+        - Settori target del bando vs settore dell'idea
+        - Beneficiari ammessi vs tipologia di azienda
+        - Obiettivi del bando vs obiettivi dell'idea
+        - Tecnologie/innovazioni richieste vs proposte
+        
+        Fornisci:
+        1. Un punteggio da 0 a 100
+        2. Una spiegazione breve dell'allineamento
+        3. Raccomandazioni specifiche
+        
+        Formato della risposta:
+        Punteggio: [0-100]
+        Spiegazione: [spiegazione breve]
+        Raccomandazioni: [2-3 raccomandazioni]
+        """
+        
+        return prompt
+
+class JsonBuilderTool(BaseTool):
+    name: str = "JSON Builder Tool"
+    description: str = "Costruisce il JSON finale con tutte le informazioni estratte dal documento."
     
-    def _calculate_alignment_score(self, business_idea: str, bando_data: Dict) -> float:
-        """Calcola il punteggio di allineamento (0-100)"""
-        score = 0
-        max_score = 100
+    def _run(self, extracted_data: str) -> str:
+        """
+        Costruisce il JSON finale con i dati estratti
+        Args:
+            extracted_data: Stringa contenente tutti i dati estratti dall'LLM
+        """
         
-        business_lower = business_idea.lower()
+        prompt = f"""
+        Basandoti sui seguenti dati estratti dal documento di bando, crea un JSON strutturato 
+        con ESATTAMENTE queste chiavi (rispetta maiuscole/minuscole e spazi):
+
+        DATI ESTRATTI:
+        {extracted_data}
         
-        # Verifica settori target (30 punti)
-        if 'target_sectors' in bando_data:
-            sector_matches = 0
-            for sector in bando_data['target_sectors']:
-                if sector in business_lower:
-                    sector_matches += 1
-            if sector_matches > 0:
-                score += min(30, sector_matches * 10)
+        Crea un JSON con questa struttura esatta:
+        {{
+            "Ente erogatore": "valore",
+            "Titolo dell'avviso": "valore", 
+            "Descrizione aggiuntiva": "valore",
+            "Beneficiari": "valore",
+            "Apertura": "valore",
+            "Chiusura": "valore", 
+            "Dotazione finanziaria": "valore",
+            "Contributo": "valore",
+            "Parole chiave": "valore",
+            "Aperto": "valore",
+            "Nome file": "valore"
+        }}
         
-        # Verifica dimensione aziendale (25 punti)
-        if 'company_size_requirements' in bando_data:
-            size_keywords = ['startup', 'piccola', 'media', 'PMI']
-            for keyword in size_keywords:
-                if keyword in business_lower:
-                    score += 25
-                    break
+        IMPORTANTE:
+        - Usa ESATTAMENTE le chiavi indicate (con spazi e maiuscole)
+        - Se un'informazione non è disponibile, usa "Non specificato"
+        - Per "Aperto" usa solo "si" o "no"
+        - Il JSON deve essere valido e formattato correttamente
         
-        # Verifica keywords innovative (20 punti)
-        innovative_keywords = ['innovazione', 'tecnologia', 'digitale', 'sostenibilità', 'ricerca']
-        innovation_matches = sum(1 for keyword in innovative_keywords if keyword in business_lower)
-        score += min(20, innovation_matches * 5)
+        Rispondi SOLO con il JSON, senza testo aggiuntivo.
+        """
         
-        # Verifica presenza di elementi chiave (25 punti)
-        key_elements = ['sviluppo', 'mercato', 'prodotto', 'servizio', 'cliente']
-        element_matches = sum(1 for element in key_elements if element in business_lower)
-        score += min(25, element_matches * 5)
-        
-        return min(max_score, score)
-    
-    def _generate_alignment_explanation(self, business_idea: str, bando_data: Dict, score: float) -> str:
-        """Genera spiegazione del punteggio di allineamento"""
-        
-        if score >= 80:
-            return f"Ottimo allineamento ({score}%). L'idea di business presenta forte compatibilità con i requisiti del bando."
-        elif score >= 60:
-            return f"Buon allineamento ({score}%). L'idea di business è compatibile con il bando con alcuni adattamenti."
-        elif score >= 40:
-            return f"Allineamento moderato ({score}%). L'idea di business richiede modifiche significative per adattarsi al bando."
-        else:
-            return f"Allineamento limitato ({score}%). L'idea di business presenta poca compatibilità con i requisiti del bando."
-    
-    def _generate_recommendations(self, business_idea: str, bando_data: Dict, score: float) -> List[str]:
-        """Genera raccomandazioni basate sull'allineamento"""
-        
-        recommendations = []
-        
-        if score >= 70:
-            recommendations.append("Procedere con la candidatura al bando")
-            recommendations.append("Preparare la documentazione richiesta")
-            recommendations.append("Verificare tutti i requisiti specifici")
-        else:
-            recommendations.append("Valutare modifiche all'idea di business per aumentare l'allineamento")
-            recommendations.append("Considerare bandi alternativi più adatti")
-            recommendations.append("Consultare esperti per ottimizzare la proposta")
-        
-        return recommendations
+        return prompt

@@ -29,20 +29,33 @@ class RagSystem:
             length_function=len
         )
         self._prompt = PromptTemplate(
-            input_variables=["question", "context"],
+            input_variables=["input", "context"],
             template = """
-            You are an AI assistant specialized in funding opportunities provided by the Lombardy Region.
-            Your goal is to assist businesses and professionals by providing clear, accurate, and useful information about available grants, eligibility criteria, deadlines, allocated funds, and how to apply.
-
-            Use the documents provided by the system (retrieved_documents) to answer with accuracy and clarity.
-            Do not make up information. If the documents do not contain a direct answer, kindly suggest how to obtain official information.
-
+            Sei un esperto analista di bandi pubblici che sa estrarre precisamente informazioni da documenti complessi.
             
-            Tone: professional but understandable. Use clear and simple language.
-            If the question is vague, kindly ask the user to provide more specific details.
+            Le tue competenze distintive includono:
+            - Estrazione di informazioni salienti da documenti di bandi pubblici
+            - Analisi contestuale per identificare enti erogatori, date, importi e requisiti
+            - Valutazione dell'allineamento tra progetti imprenditoriali e opportunità di finanziamento
             
-            Respond in standard Italian.
-            Question: {question}
+            Devi compiere queste task:
+            - Estrazione sistematica dei seguenti elementi per ogni bando nel contesto:
+                    1.Ente erogatore
+                    2.Titolo del bando
+                    3.Descrizione aggiuntiva
+                    4.Beneficiari
+                    5.Data di apertura
+                    6.Data di chiusura
+                    7.Importo finanziabile
+                    8.Contributo
+                    9.Note
+                    10.Parole chiave
+                    11.Nome file del bando
+            - Validazione e strutturazione finale dei dati
+            - Valutazione dell'allineamento tra Business idea, progetti imprenditorialie opportunità di finanziamento
+            - Estrazione dei link di riferimento al bando
+
+            Business Idea: {input}
             Context: {context}
             Answer:
             """
@@ -153,15 +166,13 @@ class RagSystem:
         
         #build query
         prompt  = self._prompt.invoke({
-            "question": query_text,
+            "input": query_text,
             "context": self.vector_store.similarity_search(query_text, k=k)
         }) 
 
         # Generate an answer using the LLM
         answer = self.llm.invoke(prompt)
-        
         return answer
-    
     def load_vector_store(self, vector_store_path: str):
         """
         Load the vector store from a specified path.
@@ -231,6 +242,8 @@ if __name__ == "__main__":
         rag.load_vector_store(vector_store_path=db_folder)
 
 
-    answer = rag.generate("Riassumi il bando ricircolo STEP e fammi capire come accedere ai benefici previsti in poche parole")
+    answer = rag.generate(""""
+                Quali sono i bandi pubblici disponibili per finanziare un progetto imprenditoriale nel settore tecnologico in Lombardia?
+        """,k=5)
     print(answer.content)
 

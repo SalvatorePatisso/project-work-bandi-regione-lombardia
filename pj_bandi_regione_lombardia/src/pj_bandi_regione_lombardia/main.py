@@ -33,7 +33,6 @@ def validate_environment():
 def validate_vector_store():
     """Valida che il vector store FAISS sia presente e accessibile"""
     base_dir = pathlib.Path(__file__).parent.parent
-    print(f"Verifica cartella vector store in: {base_dir}")
     db_folder = base_dir / "db"
     
     if not db_folder.exists():
@@ -120,17 +119,27 @@ def main():
         # Inizializzazione agente con RAG
         print("=== INIZIALIZZAZIONE SISTEMA ===")
         reader_agent_instance = ReaderAgent()
+        
+        # Test connessione LLM prima di procedere
+        if not reader_agent_instance.test_llm_connection():
+            print("❌ LLM non funziona, impossibile procedere")
+            return None
+            
         print("✅ Agente Reader inizializzato")
         print("✅ Sistema RAG connesso")
         print("✅ Vector store caricato")
+        print("✅ LLM testato e funzionante")
         print()
         
         # Ricerca del documento più rilevante tramite RAG
         print("=== RICERCA DOCUMENTO OTTIMALE ===")
         print("🔍 Analizzando il database vettoriale per trovare il bando più adatto...")
         
-        # Qui è dove avviene la magia: il RAG trova il documento più pertinente
-        document_context = reader_agent_instance.get_most_relevant_document(business_idea)
+        # Recupera documento + metadata (incluso nome file)
+        document_context, metadata = reader_agent_instance.get_most_relevant_document(business_idea)
+        
+        # Estrae nome file dai metadata
+        filename = reader_agent_instance.extract_filename_from_metadata(metadata)
         
         # Verifica che il documento sia stato recuperato correttamente
         if "Errore" in document_context or "Nessun documento" in document_context:
@@ -138,6 +147,7 @@ def main():
             return None
         
         print("✅ Documento più rilevante identificato!")
+        print(f"📄 Nome file: {filename}")
         print(f"📄 Lunghezza documento: {len(document_context)} caratteri")
         print(f"📄 Anteprima documento:")
         print("-" * 50)
@@ -150,10 +160,11 @@ def main():
         reader_agent = reader_agent_instance.create_agent()
         
         # Creazione task con il documento specifico trovato dal RAG
-        analysis_task = ReaderTasks.create_document_analysis_task(
+        analysis_task = ReaderTasks.create_iterative_document_analysis_task(
             agent=reader_agent,
             business_idea=business_idea,
-            document_context=document_context  # ← Il documento RAW trovato dal RAG
+            document_context=document_context,  # ← Il documento RAW trovato dal RAG
+            filename=filename  # ← Nome file estratto dai metadata
         )
         
         # Configurazione crew
