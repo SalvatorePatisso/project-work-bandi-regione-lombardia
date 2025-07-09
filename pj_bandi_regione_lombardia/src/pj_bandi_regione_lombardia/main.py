@@ -1,10 +1,15 @@
 # main.py
 from crewai import Crew, Process
 from agents.reader_agent import ReaderAgent
-from tasks.reader_tasks import ReaderTasks
+from agents.extractor_agent import ExtractorAgent
+from agents.writer_agent import WriterAgent
+from tasks.extractor_tasks import ExtractorTasks
 import os
 import pathlib
 from dotenv import load_dotenv
+import json
+import threading
+import time
 
 def validate_environment():
     """Valida che tutte le variabili d'ambiente necessarie siano configurate"""
@@ -40,7 +45,6 @@ def validate_vector_store():
         print("Crea la cartella 'db' e vettorizza i documenti PDF prima di procedere")
         return False, None
     
-    # Cerca file FAISS
     faiss_files = list(db_folder.glob("*.faiss"))
     pkl_files = list(db_folder.glob("*.pkl"))
     
@@ -79,6 +83,136 @@ def get_business_idea():
     
     return business_idea
 
+def run_extractor_agent(extractor_agent_instance, reader_agent_instance, filename):
+    """Esegue l'agente Extractor in background con approccio ibrido"""
+    print("\n🤖 EXTRACTOR AGENT: Avvio estrazione dati strutturati con approccio ibrido...")
+    
+    try:
+        # Crea la cartella json_description se non esiste
+        json_dir = pathlib.Path(__file__).parent / "json_description"
+        json_dir.mkdir(exist_ok=True)
+        
+        # Crea il nome del file JSON basato sul nome del bando
+        json_filename = filename.replace('.pdf', '.json').replace('.PDF', '.json')
+        output_file = json_dir / json_filename
+        
+        print(f"📁 Directory output: {json_dir}")
+        print(f"📁 Directory output (PATH ASSOLUTO): {json_dir.absolute()}")
+        print(f"📄 File output: {json_filename}")
+        print(f"📄 File output (PATH COMPLETO): {output_file.absolute()}")
+        
+        # Recupera il path completo del file sorgente
+        source_file = reader_agent_instance.current_metadata.get('source', '')
+        
+        # Ricostruisci il documento completo
+        full_document = extractor_agent_instance.reconstruct_full_document(
+            reader_agent_instance.rag_system, 
+            source_file
+        )
+        
+        if full_document:
+            # Usa il nuovo metodo ibrido che combina RAG + documento completo
+            extracted_data = extractor_agent_instance.extract_structured_info_hybrid(
+                rag_system=reader_agent_instance.rag_system,
+                full_document=full_document,
+                filename=filename,
+                source_file=source_file
+            )
+            
+            if extracted_data:
+                # Controlla se il file esiste già
+                if output_file.exists():
+                    print(f"⚠️ File esistente verrà sovrascritto: {output_file.name}")
+                
+                # Salva il JSON
+                try:
+                    with open(output_file, 'w', encoding='utf-8') as f:
+                        json.dump(extracted_data, f, ensure_ascii=False, indent=2)
+                        f.flush()  # Forza la scrittura su disco
+                        os.fsync(f.fileno())  # Assicura che sia scritto fisicamente
+                except Exception as e:
+                    print(f"\n❌ EXTRACTOR AGENT: Errore durante il salvataggio: {e}")
+                    return
+                
+                # Verifica che il file sia stato effettivamente scritto
+                if output_file.exists():
+                    file_size = output_file.stat().st_size
+                    print(f"\n✅ EXTRACTOR AGENT: Dati salvati in {output_file}")
+                    print(f"📍 PATH COMPLETO: {output_file.absolute()}")
+                    print(f"📊 Dimensione file: {file_size} bytes")
+                    print(f"📊 Anteprima dati estratti:")
+                    print(f"   - Ente: {extracted_data.get('Ente erogatore', 'N/A')}")
+                    print(f"   - Titolo: {extracted_data.get('Titolo dell\'avviso', 'N/A')[:50]}...")
+                    print(f"   - Dotazione: {extracted_data.get('Dotazione finanziaria', 'N/A')}")
+                    print(f"   - Beneficiari: {extracted_data.get('Beneficiari', 'N/A')[:50]}...")
+                    
+                    # Conta i campi compilati vs non specificati
+                    filled_fields = sum(1 for v in extracted_data.values() if v != "Non specificato")
+                    total_fields = len(extracted_data)
+                    print(f"   - Completezza: {filled_fields}/{total_fields} campi compilati")
+                else:
+                    print(f"\n❌ EXTRACTOR AGENT: Errore - il file non è stato salvato!")
+            else:
+                print("\n❌ EXTRACTOR AGENT: Errore nell'estrazione dati")
+        else:
+            print("\n❌ EXTRACTOR AGENT: Impossibile ricostruire il documento completo")
+            
+    except Exception as e:
+        print(f"\n❌ EXTRACTOR AGENT: Errore: {e}")
+
+def run_writer_agent(writer_agent_instance, json_dir: pathlib.Path):
+    """Esegue il WriterAgent per creare il file Excel"""
+    print("\n📝 WRITER AGENT: Avvio creazione report Excel...")
+    
+    try:
+        # Crea il file Excel
+        excel_path = writer_agent_instance.create_excel_file(json_dir)
+        
+        if excel_path:
+            # Valida il file creato
+            if writer_agent_instance.validate_excel_output(excel_path):
+                print("\n✅ WRITER AGENT: Report Excel completato con successo!")
+            else:
+                print("\n❌ WRITER AGENT: Il file Excel creato non è valido")
+        else:
+            print("\n❌ WRITER AGENT: Impossibile creare il file Excel")
+            
+    except Exception as e:
+        print(f"\n❌ WRITER AGENT: Errore: {e}")
+        import traceback
+        traceback.print_exc()
+
+def interactive_chat_mode(reader_agent_instance):
+    """Modalità chat interattiva con l'utente"""
+    print("\n" + "="*70)
+    print("💬 MODALITÀ CHAT INTERATTIVA")
+    print("="*70)
+    print(f"📄 Documento caricato: {reader_agent_instance.current_filename}")
+    print("Puoi fare domande sul bando. Digita 'exit' per uscire o 'reset' per azzerare la conversazione.")
+    print("-"*70)
+    
+    while True:
+        user_input = input("\n🤔 La tua domanda: ").strip()
+        
+        if user_input.lower() == 'exit':
+            print("👋 Uscita dalla modalità chat.")
+            break
+        elif user_input.lower() == 'reset':
+            reader_agent_instance.reset_conversation()
+            print("🔄 Conversazione resettata. Puoi ricominciare con nuove domande.")
+            continue
+        elif not user_input:
+            print("⚠️ Inserisci una domanda valida.")
+            continue
+        
+        print("\n⏳ Elaborazione risposta...")
+        response = reader_agent_instance.chat_about_document(user_input)
+        
+        print("\n📢 RISPOSTA:")
+        print("-"*70)
+        print(response)
+        print("-"*70)
+
 def main():
     print("🚀 SISTEMA RAG + CrewAI - Analisi Intelligente Bandi Lombardia")
     print("=" * 70)
@@ -90,18 +224,15 @@ def main():
     # Validazione prerequisiti
     print("=== VALIDAZIONE SISTEMA ===")
     
-    # 1. Verifica variabili d'ambiente
     if not validate_environment():
         return None
     print("✅ Variabili d'ambiente configurate correttamente")
     
-    # 2. Verifica vector store
     vector_store_valid, db_folder = validate_vector_store()
     if not vector_store_valid:
         return None
     print(f"✅ Vector store trovato in: {db_folder}")
     
-    # 3. Mostra configurazione
     print("\n=== CONFIGURAZIONE AZURE ===")
     print(f"Endpoint: {os.getenv('AZURE_API_BASE')}")
     print(f"LLM Model: {os.getenv('AZURE_LLM_MODEL')}")
@@ -112,36 +243,33 @@ def main():
     # Input dell'utente
     business_idea = get_business_idea()
     print(f"\n📋 Idea di business ricevuta ({len(business_idea)} caratteri)")
-    print(f"Anteprima: {business_idea[:150]}...")
     print()
     
     try:
-        # Inizializzazione agente con RAG
+        # Inizializzazione agenti
         print("=== INIZIALIZZAZIONE SISTEMA ===")
         reader_agent_instance = ReaderAgent()
+        extractor_agent_instance = ExtractorAgent()
+        writer_agent_instance = WriterAgent()
         
-        # Test connessione LLM prima di procedere
+        # Test connessione LLM
         if not reader_agent_instance.test_llm_connection():
             print("❌ LLM non funziona, impossibile procedere")
             return None
             
-        print("✅ Agente Reader inizializzato")
+        print("✅ Reader Agent inizializzato")
+        print("✅ Extractor Agent inizializzato")
+        print("✅ Writer Agent inizializzato")
         print("✅ Sistema RAG connesso")
-        print("✅ Vector store caricato")
-        print("✅ LLM testato e funzionante")
         print()
         
-        # Ricerca del documento più rilevante tramite RAG
+        # Ricerca del documento più rilevante
         print("=== RICERCA DOCUMENTO OTTIMALE ===")
         print("🔍 Analizzando il database vettoriale per trovare il bando più adatto...")
         
-        # Recupera documento + metadata (incluso nome file)
         document_context, metadata = reader_agent_instance.get_most_relevant_document(business_idea)
-        
-        # Estrae nome file dai metadata
         filename = reader_agent_instance.extract_filename_from_metadata(metadata)
         
-        # Verifica che il documento sia stato recuperato correttamente
         if "Errore" in document_context or "Nessun documento" in document_context:
             print(f"❌ Problema nel recupero documento: {document_context}")
             return None
@@ -149,88 +277,101 @@ def main():
         print("✅ Documento più rilevante identificato!")
         print(f"📄 Nome file: {filename}")
         print(f"📄 Lunghezza documento: {len(document_context)} caratteri")
-        print(f"📄 Anteprima documento:")
-        print("-" * 50)
-        print(document_context[:400] + "..." if len(document_context) > 400 else document_context)
-        print("-" * 50)
         print()
         
-        # Creazione crew CrewAI
-        print("=== CONFIGURAZIONE ANALISI CREWAI ===")
-        reader_agent = reader_agent_instance.create_agent()
-        
-        # Creazione task con il documento specifico trovato dal RAG
-        analysis_task = ReaderTasks.create_iterative_document_analysis_task(
-            agent=reader_agent,
-            business_idea=business_idea,
-            document_context=document_context,  # ← Il documento RAW trovato dal RAG
-            filename=filename  # ← Nome file estratto dai metadata
+        # Avvia l'Extractor Agent in un thread separato
+        extractor_thread = threading.Thread(
+            target=run_extractor_agent,
+            args=(extractor_agent_instance, reader_agent_instance, filename)
         )
+        extractor_thread.daemon = True
+        extractor_thread.start()
         
-        # Configurazione crew
-        crew = Crew(
-            agents=[reader_agent],
-            tasks=[analysis_task],
-            process=Process.sequential,
-            verbose=True
-        )
+        # Mostra info iniziali sul documento
+        print("=== INFORMAZIONI INIZIALI SUL BANDO ===")
+        initial_question = f"Fornisci un riassunto generale di questo bando, evidenziando come potrebbe essere rilevante per questa idea di business: {business_idea[:200]}..."
+        initial_response = reader_agent_instance.chat_about_document(initial_question)
+        print(initial_response)
         
-        print("✅ Crew configurata con successo")
-        print("🤖 Agente pronto per l'analisi")
-        print()
+        # Avvia la modalità chat interattiva
+        interactive_chat_mode(reader_agent_instance)
         
-        # Esecuzione analisi
-        print("=== ANALISI DOCUMENTO IN CORSO ===")
-        print("⚙️  L'agente sta analizzando il documento trovato dal RAG...")
-        print("⚙️  Estrazione informazioni chiave in corso...")
-        print("⚙️  Calcolo allineamento business-bando...")
-        print()
+        # Attendi che l'extractor finisca (con timeout)
+        print("\n⏳ Attendo completamento estrazione dati...")
+        extractor_thread.join(timeout=60)  # Aumentato timeout a 60 secondi
         
-        result = crew.kickoff()
+        if extractor_thread.is_alive():
+            print("⚠️ L'estrazione dati sta ancora procedendo in background")
+            print("⏳ Attendo ancora 30 secondi...")
+            extractor_thread.join(timeout=30)
+            
+            if extractor_thread.is_alive():
+                print("❌ Timeout: l'estrazione sta impiegando troppo tempo")
+        else:
+            print("✅ Estrazione dati completata!")
+            
+            # Mostra il JSON salvato se esiste
+            json_dir = pathlib.Path(__file__).parent / "json_description"
+            json_filename = filename.replace('.pdf', '.json').replace('.PDF', '.json')
+            json_path = json_dir / json_filename
+            
+            # Aggiungi un piccolo delay per assicurarsi che il file sia stato scritto
+            import time
+            time.sleep(0.5)
+            
+            if json_path.exists():
+                print(f"\n📊 DATI STRUTTURATI ESTRATTI (salvati in {json_path}):")
+                print(f"📍 PATH ASSOLUTO: {json_path.absolute()}")
+                print(f"📊 Dimensione file: {json_path.stat().st_size} bytes")
+                print("-"*70)
+                with open(json_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    print(json.dumps(data, ensure_ascii=False, indent=2))
+                print("-"*70)
+            else:
+                print(f"\n⚠️ File JSON non trovato in: {json_path.absolute()}")
+                print("Possibili cause:")
+                print("1. L'estrazione è ancora in corso")
+                print("2. Si è verificato un errore durante il salvataggio")
+                print("3. Il percorso del file potrebbe essere diverso")
         
-        # Presentazione risultati
-        print("\n" + "=" * 70)
-        print("🎉 ANALISI COMPLETATA - RISULTATI")
-        print("=" * 70)
-        print()
-        print("📊 DOCUMENTO ANALIZZATO:")
-        print(f"   Fonte: Database vettoriale RAG")
-        print(f"   Rilevanza: Massima compatibilità con la tua idea di business")
-        print(f"   Elaborazione: CrewAI + Azure OpenAI")
-        print()
-        print("📋 RISULTATO STRUTTURATO:")
-        print("-" * 70)
-        print(result)
-        print("-" * 70)
-        print()
-        print("✅ Analisi completata con successo!")
+        # Esegui il WriterAgent dopo che l'ExtractorAgent ha finito
+        print("\n" + "="*70)
+        print("🚀 AVVIO WRITER AGENT")
+        print("="*70)
         
-        return result
+        json_dir = pathlib.Path(__file__).parent / "json_description"
         
-    except ImportError as e:
-        print(f"❌ ERRORE IMPORT: {e}")
-        print("\n🔧 SOLUZIONE:")
-        print("Installa tutte le dipendenze richieste:")
-        print("pip install -r requirements.txt")
-        return None
+        # Verifica che ci siano file JSON da processare
+        json_files = list(json_dir.glob("*.json"))
+        if json_files:
+            print(f"📊 Trovati {len(json_files)} file JSON da consolidare in Excel")
+            
+            # Lancia il WriterAgent in un thread separato
+            writer_thread = threading.Thread(
+                target=run_writer_agent,
+                args=(writer_agent_instance, json_dir)
+            )
+            writer_thread.daemon = True
+            writer_thread.start()
+            
+            # Attendi il completamento con timeout
+            print("⏳ Attendo completamento creazione Excel...")
+            writer_thread.join(timeout=30)
+            
+            if writer_thread.is_alive():
+                print("⚠️ La creazione del report Excel sta ancora procedendo...")
+            else:
+                print("✅ Processo WriterAgent completato!")
+        else:
+            print("⚠️ Nessun file JSON trovato nella directory json_description")
+            print("   Il WriterAgent non verrà eseguito")
         
-    except FileNotFoundError as e:
-        print(f"❌ ERRORE FILE: {e}")
-        print("\n🔧 SOLUZIONE:")
-        print("Verifica che questi file/cartelle esistano:")
-        print("- rag.py")
-        print("- cartella db/ con vector store FAISS")
-        print("- file .env con variabili Azure")
-        return None
+        return True
         
     except Exception as e:
         print(f"❌ ERRORE GENERALE: {e}")
         print(f"Tipo errore: {type(e).__name__}")
-        print("\n🔧 POSSIBILI SOLUZIONI:")
-        print("1. Verifica connessione ad Azure OpenAI")
-        print("2. Controlla che il vector store sia valido")
-        print("3. Verifica che i documenti PDF siano stati vettorizzati correttamente")
-        print("4. Controlla i log di errore sopra per dettagli specifici")
         return None
 
 if __name__ == "__main__":
@@ -238,8 +379,9 @@ if __name__ == "__main__":
     
     if result:
         print("\n" + "=" * 50)
-        print("🚀 SISTEMA OPERATIVO E PRONTO!")
-        print("Riavvia il programma per analizzare altre idee di business.")
+        print("✅ SESSIONE COMPLETATA")
+        print(f"I dati estratti sono salvati in: json_description/")
+        print(f"Il report Excel è salvato in: excel_output/")
         print("=" * 50)
     else:
         print("\n" + "=" * 50)

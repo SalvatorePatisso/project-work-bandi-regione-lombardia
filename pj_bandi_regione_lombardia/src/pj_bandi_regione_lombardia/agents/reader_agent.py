@@ -1,10 +1,10 @@
 # agents/reader_agent.py
 from crewai import Agent
 from crewai.llm import LLM
-from tools.reader_tools import LLMDocumentExtractorTool, BusinessAlignmentTool, JsonBuilderTool
 from rag import RagSystem
 import os
 import pathlib
+from typing import List, Dict
 
 class ReaderAgent:
     def __init__(self):
@@ -15,7 +15,7 @@ class ReaderAgent:
             api_key=os.getenv("AZURE_API_KEY"),
             api_base=os.getenv("AZURE_API_BASE"),
             api_version=os.getenv("AZURE_API_VERSION"),
-            temperature=0.1,  # Ridotta per maggiore precisione nell'estrazione
+            temperature=0.7,
             max_tokens=4000
         )
         print(f"✅ LLM configurato con model: azure/{os.getenv('AZURE_LLM_MODEL')}")
@@ -41,56 +41,12 @@ class ReaderAgent:
         self.rag_system.load_vector_store(vector_store_path=str(db_folder))
         print("Vector store caricato con successo!")
         
-        # Inizializzazione tool LLM-based
-        self.llm_extractor_tool = LLMDocumentExtractorTool()
-        self.business_alignment_tool = BusinessAlignmentTool()
-        self.json_builder_tool = JsonBuilderTool()
+        # Stato della conversazione
+        self.conversation_history = []
+        self.current_document = None
+        self.current_metadata = None
+        self.current_filename = None
         
-        print("✅ Tool LLM-based inizializzati:")
-        print("   - LLMDocumentExtractorTool (estrazione iterativa)")
-        print("   - BusinessAlignmentTool (valutazione allineamento)")
-        print("   - JsonBuilderTool (costruzione JSON finale)")
-    
-    def get_most_relevant_document(self, business_idea: str) -> tuple:
-        """
-        Recupera il documento RAW più rilevante dal vector store
-        Restituisce tupla (document_content, metadata) per includere nome file
-        """
-        try:
-            if self.rag_system.vector_store is None:
-                return "Errore: Vector store non inizializzato.", {}
-            
-            print(f"🔍 Cercando documento più rilevante per: {business_idea[:100]}...")
-            
-            # Usa similarity_search per ottenere i documenti raw dal vector store
-            documents = self.rag_system.vector_store.similarity_search(
-                query=business_idea, 
-                k=1
-            )
-            
-            if documents and len(documents) > 0:
-                # Estrae il contenuto del documento più rilevante
-                most_relevant_doc = documents[0]
-                document_content = most_relevant_doc.page_content
-                
-                # Informazioni aggiuntive sul documento (incluso nome file)
-                metadata = getattr(most_relevant_doc, 'metadata', {})
-                
-                print(f"✅ Documento trovato! Lunghezza: {len(document_content)} caratteri")
-                if metadata:
-                    print(f"📄 Metadata: {metadata}")
-                
-                # Restituisce contenuto E metadata
-                return document_content, metadata
-            else:
-                print("❌ Nessun documento rilevante trovato nel database.")
-                return "Nessun documento rilevante trovato nel database vettoriale.", {}
-                
-        except Exception as e:
-            error_msg = f"Errore nel recupero documento RAG: {str(e)}"
-            print(f"❌ {error_msg}")
-            return error_msg, {}
-    
     def test_llm_connection(self):
         """Testa la connessione LLM prima di usare l'agente"""
         try:
@@ -106,101 +62,130 @@ class ReaderAgent:
         """Estrae il nome del file dai metadata"""
         if 'source' in metadata:
             source_path = metadata['source']
-            # Estrae solo il nome del file dal percorso completo
             filename = os.path.basename(source_path)
             return filename
-        
         return "Non specificato"
     
-    def test_llm_extraction(self, document_text: str, field_name: str) -> str:
-        """Test singolo campo per debugging"""
-        try:
-            prompt = self.llm_extractor_tool._run(document_text, field_name)
-            response = self.llm.call(prompt)
-            print(f"✅ Test {field_name}: {response[:100]}...")
-            return response
-        except Exception as e:
-            print(f"❌ Errore test {field_name}: {e}")
-            return f"Errore: {e}"
-    
-    def create_agent(self) -> Agent:
-        """Crea e configura l'agente Reader con tool LLM iterativi"""
-        
-        return Agent(
-            role="Expert LLM-based Document Analyst for Grant Applications",
-            goal="Analizzare documenti di bandi usando l'LLM per estrarre iterativamente ogni informazione specifica richiesta",
-            backstory="""
-            Sei un esperto analista di bandi pubblici specializzato nell'uso di Large Language Models 
-            per l'estrazione precisa di informazioni da documenti complessi.
-            
-            Le tue competenze distintive includono:
-            - Utilizzo dell'LLM per fare domande mirate e specifiche sui documenti
-            - Estrazione iterativa di informazioni attraverso prompt strutturati
-            - Analisi contestuale per identificare enti erogatori, date, importi e requisiti
-            - Valutazione dell'allineamento tra progetti imprenditoriali e opportunità di finanziamento
-            - Costruzione di output strutturati in formato JSON con precisione
-            
-            Il tuo approccio metodologico prevede:
-            1. Analisi del documento attraverso domande specifiche per ogni campo
-            2. Utilizzo dell'intelligenza del modello LLM per interpretare il contesto
-            3. Estrazione sistematica di tutte le informazioni richieste
-            4. Validazione e strutturazione finale dei dati
-            
-            Non usi regex o pattern matching, ma ti affidi completamente all'intelligenza 
-            del modello LLM per comprendere e interpretare i contenuti dei documenti.
-            """,
-            verbose=True,
-            allow_delegation=False,
-            tools=[
-                self.llm_extractor_tool,
-                self.business_alignment_tool, 
-                self.json_builder_tool
-            ],
-            llm=self.llm,
-            max_iter=15,  # Aumentato per gestire processo iterativo
-            memory=True
-        )
-    
-    def get_rag_elaborated_answer(self, business_idea: str) -> str:
-        """Recupera una risposta elaborata dal sistema RAG (con LLM)"""
-        try:
-            print("Generando risposta elaborata dal sistema RAG...")
-            answer = self.rag_system.generate(business_idea, k=3)
-            return answer.content
-        except Exception as e:
-            error_msg = f"Errore nella generazione risposta RAG: {str(e)}"
-            print(f"❌ {error_msg}")
-            return error_msg
-    
-    def search_multiple_documents(self, business_idea: str, k: int = 3) -> list:
-        """Recupera i top K documenti più rilevanti"""
+    def get_most_relevant_document(self, business_idea: str) -> tuple:
+        """Recupera il documento RAW più rilevante dal vector store"""
         try:
             if self.rag_system.vector_store is None:
-                return []
+                return "Errore: Vector store non inizializzato.", {}
             
-            print(f"Cercando i top {k} documenti più rilevanti...")
+            print(f"🔍 Cercando documento più rilevante per: {business_idea[:100]}...")
             
             documents = self.rag_system.vector_store.similarity_search(
                 query=business_idea, 
-                k=k
+                k=1
             )
             
-            results = []
-            for i, doc in enumerate(documents):
-                metadata = getattr(doc, 'metadata', {})
-                filename = self.extract_filename_from_metadata(metadata)
+            if documents and len(documents) > 0:
+                most_relevant_doc = documents[0]
+                document_content = most_relevant_doc.page_content
+                metadata = getattr(most_relevant_doc, 'metadata', {})
                 
-                results.append({
-                    'rank': i + 1,
-                    'content': doc.page_content,
-                    'metadata': metadata,
-                    'filename': filename,
-                    'length': len(doc.page_content)
-                })
+                # Salva il documento corrente per la chat
+                self.current_document = document_content
+                self.current_metadata = metadata
+                self.current_filename = self.extract_filename_from_metadata(metadata)
+                
+                print(f"✅ Documento trovato! Lunghezza: {len(document_content)} caratteri")
+                if metadata:
+                    print(f"📄 Metadata: {metadata}")
+                
+                return document_content, metadata
+            else:
+                print("❌ Nessun documento rilevante trovato nel database.")
+                return "Nessun documento rilevante trovato nel database vettoriale.", {}
+                
+        except Exception as e:
+            error_msg = f"Errore nel recupero documento RAG: {str(e)}"
+            print(f"❌ {error_msg}")
+            return error_msg, {}
+    
+    def chat_about_document(self, user_question: str) -> str:
+        """Gestisce una conversazione continua sul documento corrente"""
+        if not self.current_document:
+            return "Nessun documento caricato. Cerca prima un documento con un'idea di business."
+        
+        # Aggiungi la domanda alla storia
+        self.conversation_history.append({"role": "user", "content": user_question})
+        
+        # Costruisci il contesto della conversazione
+        conversation_context = f"""
+        Stai analizzando il seguente documento di bando:
+        File: {self.current_filename}
+        
+        ESTRATTO DEL DOCUMENTO:
+        {self.current_document[:2000]}...
+        
+        STORICO CONVERSAZIONE:
+        """
+        
+        # Aggiungi gli ultimi 5 scambi
+        for exchange in self.conversation_history[-10:]:
+            conversation_context += f"\n{exchange['role'].upper()}: {exchange['content']}"
+        
+        # Prompt per rispondere
+        prompt = f"""
+        {conversation_context}
+        
+        Rispondi alla domanda dell'utente basandoti sul documento del bando.
+        Sii preciso e fai riferimento a sezioni specifiche quando possibile.
+        Se l'informazione richiesta non è presente nel documento, dillo chiaramente.
+        """
+        
+        try:
+            # Usa il RAG system per cercare informazioni specifiche nel documento
+            rag_response = self.rag_system.generate(user_question, k=3)
             
-            print(f"✅ Trovati {len(results)} documenti")
-            return results
+            # Combina la risposta RAG con il contesto della conversazione
+            final_prompt = f"""
+            Basandoti su queste informazioni dal documento:
+            {rag_response.content}
+            
+            E considerando il contesto della conversazione:
+            {conversation_context}
+            
+            Fornisci una risposta completa e contestualizzata alla domanda dell'utente.
+            """
+            
+            response = self.llm.call(final_prompt)
+            
+            # Salva la risposta nella storia
+            self.conversation_history.append({"role": "assistant", "content": response})
+            
+            return response
             
         except Exception as e:
-            print(f"❌ Errore nella ricerca multipla: {e}")
-            return []
+            error_msg = f"Errore durante la chat: {str(e)}"
+            print(f"❌ {error_msg}")
+            return error_msg
+    
+    def reset_conversation(self):
+        """Resetta la conversazione mantenendo il documento"""
+        self.conversation_history = []
+        print("✅ Conversazione resettata")
+    
+    def create_chat_agent(self) -> Agent:
+        """Crea un agente specifico per la chat interattiva"""
+        return Agent(
+            role="Interactive Grant Document Assistant",
+            goal="Rispondere a domande specifiche dell'utente sul documento di bando selezionato, mantenendo il contesto della conversazione",
+            backstory="""
+            Sei un assistente esperto nell'analisi di bandi pubblici che mantiene una conversazione
+            fluida e contestualizzata con l'utente. 
+            
+            Le tue competenze includono:
+            - Mantenere il contesto delle domande precedenti
+            - Fornire risposte precise basate sul documento
+            - Suggerire informazioni correlate quando pertinente
+            - Guidare l'utente nella comprensione del bando
+            
+            Ricordi sempre le domande precedenti e costruisci le risposte in modo coerente.
+            """,
+            verbose=True,
+            allow_delegation=False,
+            llm=self.llm,
+            memory=True
+        )
