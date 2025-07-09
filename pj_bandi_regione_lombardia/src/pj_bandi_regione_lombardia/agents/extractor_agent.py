@@ -21,25 +21,26 @@ class ExtractorAgent:
     def reconstruct_full_document(self, rag_system, source_file: str) -> str:
         """Ricostruisce il documento completo dai chunk nel vector store"""
         try:
-            # Recupera tutti i chunk del documento
+            print(f"🔍 Ricostruzione documento da: {os.path.basename(source_file)}")
+            
+            # Usa il nuovo metodo per recuperare TUTTI i chunks del documento
+            all_documents = rag_system.get_all_documents_by_source(source_file)
+            
+            if not all_documents:
+                print(f"❌ Nessun chunk trovato per il file: {source_file}")
+                return ""
+            
+            print(f"📊 Trovati {len(all_documents)} chunks totali per questo documento")
+            
+            # Converti in formato con metadata
             all_chunks = []
-            
-            # Fai una ricerca molto ampia per recuperare tutti i chunk
-            results = rag_system.vector_store.similarity_search(
-                query="",  # Query vuota per non filtrare per contenuto
-                k=200,  # Numero alto per prendere tutti i chunk
-                filter={"source": source_file} if hasattr(rag_system.vector_store, 'filter') else None
-            )
-            
-            # Filtra manualmente se il filter non è supportato
-            for doc in results:
+            for doc in all_documents:
                 metadata = getattr(doc, 'metadata', {})
-                if metadata.get('source') == source_file:
-                    all_chunks.append({
-                        'content': doc.page_content,
-                        'page': metadata.get('page', 0),
-                        'metadata': metadata
-                    })
+                all_chunks.append({
+                    'content': doc.page_content,
+                    'page': metadata.get('page', 0),
+                    'metadata': metadata
+                })
             
             # Ordina per numero di pagina
             all_chunks.sort(key=lambda x: x['page'])
@@ -54,7 +55,17 @@ class ExtractorAgent:
                     current_page = chunk['page']
                 full_document += chunk['content'] + "\n"
             
-            print(f"✅ Documento ricostruito: {len(all_chunks)} chunk, {len(full_document)} caratteri totali")
+            print(f"✅ Documento ricostruito: {len(all_chunks)} chunks, {len(full_document)} caratteri totali")
+            
+            # Verifica di completezza
+            pages = set(chunk['page'] for chunk in all_chunks)
+            if len(pages) > 1:
+                min_page = min(pages)
+                max_page = max(pages)
+                missing_pages = set(range(min_page, max_page + 1)) - pages
+                if missing_pages:
+                    print(f"⚠️ Possibili pagine mancanti: {sorted(missing_pages)}")
+            
             return full_document
             
         except Exception as e:

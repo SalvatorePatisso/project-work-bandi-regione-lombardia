@@ -205,6 +205,49 @@ class RagSystem:
             )
         return tool
     
+    def get_all_documents_by_source(self, source_file: str) -> List[Document]:
+        """
+        Recupera TUTTI i documenti (chunks) da un file sorgente specifico
+        iterando sull'intero vector store.
+        
+        Args:
+            source_file (str): Path completo del file sorgente
+            
+        Returns:
+            List[Document]: Lista di tutti i chunks del file specificato
+        """
+        if self.vector_store is None:
+            raise ValueError("Vector store is not initialized.")
+        
+        matching_documents = []
+        
+        try:
+            # Accedi al docstore interno di FAISS
+            # FAISS LangChain memorizza i documenti in docstore.dict
+            if hasattr(self.vector_store, 'docstore'):
+                # Itera su tutti i documenti nel docstore
+                for doc_id, doc in self.vector_store.docstore._dict.items():
+                    # Controlla se il documento appartiene al file sorgente
+                    if hasattr(doc, 'metadata') and doc.metadata.get('source') == source_file:
+                        matching_documents.append(doc)
+            else:
+                # Fallback: se docstore non è accessibile, usa ricerca con k molto alto
+                print("⚠️ Docstore non accessibile, usando fallback con k=5000")
+                all_results = self.vector_store.similarity_search(
+                    query="",
+                    k=5000  # Numero molto alto per prendere tutto
+                )
+                # Filtra per source
+                for doc in all_results:
+                    if hasattr(doc, 'metadata') and doc.metadata.get('source') == source_file:
+                        matching_documents.append(doc)
+        
+        except Exception as e:
+            print(f"❌ Errore nel recupero documenti: {e}")
+            raise
+        
+        return matching_documents
+    
 if __name__ == "__main__":
 
 
@@ -246,4 +289,3 @@ if __name__ == "__main__":
                 Quali sono i bandi pubblici disponibili per finanziare un progetto imprenditoriale nel settore tecnologico in Lombardia?
         """,k=5)
     print(answer.content)
-
